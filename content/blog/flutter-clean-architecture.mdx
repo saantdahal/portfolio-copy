@@ -1,0 +1,70 @@
+---
+title: 'Building Scalable Flutter Apps with Clean Architecture'
+description: 'How to structure a Flutter app into presentation, domain, and data layers so it stays testable and maintainable as it grows.'
+date: '2026-07-10'
+tags: ['Flutter', 'Clean Architecture', 'Dart']
+---
+
+Most Flutter apps start simple: a few screens, a couple of API calls, one `main.dart` that does everything. It works, until the app grows past a handful of features and every change means touching five unrelated files. Clean Architecture is one way to keep that complexity under control.
+
+## The three layers
+
+The core idea is to split the app into layers with a strict, one-directional dependency rule: outer layers depend on inner layers, never the other way around.
+
+- **Presentation** — widgets, screens, and state management (BLoC, Provider, Riverpod). This layer only knows about UI state, never about HTTP or SQL.
+- **Domain** — plain Dart classes: entities and use cases. No Flutter imports here at all, which is what makes this layer trivial to unit test.
+- **Data** — repositories and data sources (REST client, local database, cache). This is the only layer that knows where data actually comes from.
+
+```
+lib/
+  features/
+    auth/
+      presentation/   -> screens, widgets, bloc
+      domain/         -> entities, use cases, repository interfaces
+      data/           -> repository implementations, remote/local data sources
+```
+
+## Why the repository interface lives in the domain layer
+
+A common mistake is defining the repository interface next to its implementation, in the data layer. Flip it: the **interface** belongs in the domain layer, and the **implementation** in the data layer.
+
+```dart
+// domain/repositories/auth_repository.dart
+abstract class AuthRepository {
+  Future<User> login(String email, String password);
+}
+
+// data/repositories/auth_repository_impl.dart
+class AuthRepositoryImpl implements AuthRepository {
+  AuthRepositoryImpl(this.remoteDataSource);
+  final AuthRemoteDataSource remoteDataSource;
+
+  @override
+  Future<User> login(String email, String password) {
+    return remoteDataSource.login(email, password);
+  }
+}
+```
+
+This means your use cases and BLoCs depend on an abstraction (`AuthRepository`), not a concrete implementation. Swapping REST for GraphQL, or adding an offline cache, becomes a change confined to the data layer.
+
+## Use cases keep business logic out of the BLoC
+
+A use case is a single class with one job:
+
+```dart
+class LoginUseCase {
+  LoginUseCase(this.repository);
+  final AuthRepository repository;
+
+  Future<User> call(String email, String password) {
+    return repository.login(email, password);
+  }
+}
+```
+
+It looks like unnecessary ceremony for a one-line call, and for a throwaway prototype it is. The payoff shows up once a use case needs validation, retries, or combines two repositories — that logic has one obvious home instead of being scattered across BLoC event handlers.
+
+## Is it worth it for a small app?
+
+Not always. For a weekend project, three layers per feature is overhead you don't need. The rule of thumb: if the app has more than a handful of features, will get maintained for more than a few months, or you want confidence from unit tests without spinning up a widget tree, the structure pays for itself quickly.

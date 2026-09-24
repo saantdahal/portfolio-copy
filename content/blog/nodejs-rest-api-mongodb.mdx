@@ -1,0 +1,115 @@
+---
+title: 'Building RESTful APIs with Express and MongoDB'
+description: 'A practical guide to structuring a production-ready REST API with Express and MongoDB — routing, validation, error handling, and auth.'
+date: '2026-06-22'
+tags: ['Node.js', 'Express', 'MongoDB', 'REST API']
+---
+
+Express gives you almost no structure out of the box, which is great for a five-minute demo and a problem for anything bigger. Here's a layout that scales past the first few routes.
+
+## Project layout
+
+```
+src/
+  routes/       -> route definitions only, no logic
+  controllers/  -> request/response handling
+  services/     -> business logic, talks to models
+  models/       -> Mongoose schemas
+  middleware/   -> auth, validation, error handling
+```
+
+Routes stay thin — they wire an HTTP verb and path to a controller function, nothing else:
+
+```js
+// routes/users.route.js
+import { Router } from 'express';
+import { createUser, getUser } from '../controllers/users.controller.js';
+import { validate } from '../middleware/validate.js';
+import { createUserSchema } from '../schemas/users.schema.js';
+
+const router = Router();
+
+router.post('/', validate(createUserSchema), createUser);
+router.get('/:id', getUser);
+
+export default router;
+```
+
+## Validate at the edge, not in the middle
+
+Bad input should never reach a controller. A validation middleware, backed by a schema library like Zod, rejects malformed requests before any business logic runs:
+
+```js
+export const validate = (schema) => (req, res, next) => {
+  const result = schema.safeParse(req.body);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error.flatten() });
+  }
+  req.body = result.data;
+  next();
+};
+```
+
+## One place for errors
+
+Instead of `try/catch` scattered across every controller, wrap async handlers and forward errors to a single Express error-handling middleware:
+
+```js
+export const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+// controllers/users.controller.js
+export const getUser = asyncHandler(async (req, res) => {
+  const user = await userService.findById(req.params.id);
+  if (!user) {
+    const error = new Error('User not found');
+    error.status = 404;
+    throw error;
+  }
+  res.json(user);
+});
+
+// middleware/error-handler.js
+export const errorHandler = (err, req, res, next) => {
+  const status = err.status ?? 500;
+  res.status(status).json({ error: err.message ?? 'Internal server error' });
+};
+```
+
+Every controller becomes a straight line: fetch, check, respond. Anything unexpected bubbles up to the same handler.
+
+## Mongoose schemas as the source of truth
+
+Keep validation rules that are inherent to the data model (required fields, string length, enums) on the Mongoose schema itself, so they hold regardless of which route touches the collection:
+
+```js
+const userSchema = new Schema({
+  email: { type: String, required: true, unique: true, lowercase: true },
+  passwordHash: { type: String, required: true, select: false },
+  role: { type: String, enum: ['user', 'admin'], default: 'user' },
+});
+```
+
+Request-shape validation (Zod, at the route boundary) and data-integrity validation (Mongoose schema) are complementary, not redundant — the first protects the API surface, the second protects the collection regardless of how a document gets written to it.
+
+## Auth as middleware, not a controller concern
+
+A JWT check belongs in middleware, applied to whichever routers need it:
+
+```js
+export const requireAuth = asyncHandler(async (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    const error = new Error('Unauthorized');
+    error.status = 401;
+    throw error;
+  }
+  req.user = jwt.verify(token, process.env.JWT_SECRET);
+  next();
+});
+
+router.use('/admin', requireAuth, adminRouter);
+```
+
+None of this is complicated on its own — the value is in keeping each concern (routing, validation, business logic, error handling, auth) in exactly one place, so the tenth route added to the API costs the same effort as the first.
